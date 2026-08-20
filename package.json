@@ -28,6 +28,13 @@
     "shoutcast",
     "radio-browser"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ttyfm/radio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ttyfm/radio/issues"
+  },
   "homepage": "https://tty.fm",
   "license": "MIT"
 }
