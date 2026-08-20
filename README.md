@@ -28,7 +28,7 @@ Claude-inspired design: the same bullets, tree branches and boxed prompt, so it 
 ## Install
 
 ```sh
-npm install -g ttyfm
+npm i -g ttyfm
 ```
 
 Or clone the repo and run `node radio.js`.
