@@ -1,0 +1,6 @@
+mp.add_forced_key_binding("NEXT", "ttyfm-next", function()
+  mp.commandv("script-message", "ttyfm-station", "next")
+end)
+mp.add_forced_key_binding("PREV", "ttyfm-prev", function()
+  mp.commandv("script-message", "ttyfm-station", "prev")
+end)

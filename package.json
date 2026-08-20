@@ -1,0 +1,33 @@
+{
+  "name": "ttyfm",
+  "version": "1.0.0",
+  "description": "Internet radio for your terminal, with seamless failover, live EQ and ad-dodging",
+  "type": "module",
+  "bin": {
+    "ttyfm": "./radio.js"
+  },
+  "files": [
+    "radio.js",
+    "mediakeys.lua"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "keywords": [
+    "radio",
+    "cli",
+    "terminal",
+    "mpv",
+    "streaming",
+    "icecast",
+    "shoutcast",
+    "radio-browser"
+  ],
+  "homepage": "https://tty.fm",
+  "license": "MIT"
+}
