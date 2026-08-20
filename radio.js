@@ -1052,14 +1052,21 @@ function builtinStations() {
   ))
 }
 
+const squash = (s) => s.replace(/(.)\1+/g, '$1')
+
 function builtinSearch(query) {
   const q = query.trim().toLowerCase()
   if (!q) return builtinStations()
+  const sq = squash(q)
   const scored = []
   builtinStations().forEach((st, i) => {
     const name = st.name.toLowerCase()
     const at = name.indexOf(q)
-    if (at < 0) return
+    if (at < 0) {
+      if (!squash(name).includes(sq)) return
+      scored.push({ st, rank: 3, i })
+      return
+    }
     const rank = at === 0 ? 0 : /\s/.test(name[at - 1]) ? 1 : 2
     scored.push({ st, rank, i })
   })
