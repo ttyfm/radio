@@ -43,7 +43,7 @@ winget install mpv     # Windows
 
 On Windows, run it in Windows Terminal.
 
-ttyfm ships with no stations. First launch opens discover so you can add some.
+ttyfm ships with no stations of its own. First launch opens discover, which lists the 144 built-in ones and searches 50,000 more, so you can add some.
 
 ## Keys
 
@@ -100,7 +100,7 @@ Press `w` for top songs, top artists, streaks, hours per month, your peak listen
 
 ## Stations
 
-Press `d` and type. Search runs against [radio-browser.org](https://radio-browser.org), a community stream directory of roughly 50,000 stations, no key and no account. Enter adds the one you picked and tunes to it. In the picker, `x` removes a station.
+Press `d`. The list starts on the 144 built-in stations, there because each one comes with a playlist API: elapsed time, up next, and the break detection behind ad-dodging. They are RMF's 128 Polish stations, Radio Paradise's 7, and the 9 FIP stations from Radio France. Type to narrow that list, and the same keystrokes search [radio-browser.org](https://radio-browser.org), a community stream directory of roughly 50,000 stations, no key and no account. The directory's own rows for those three are skipped, since the built-in ones carry more. Enter adds the one you picked and tunes to it. In the picker, `x` removes a station.
 
 Results with the same name collapse into one entry and their URLs become that station's mirrors, which is what failover walks down. HLS streams rank last because they carry no song info.
 
@@ -125,7 +125,7 @@ Two sources, and which one you get depends on the station.
 
 Most stations send the current song inside the stream over Icecast or SHOUTcast, and ttyfm reads it from there. That covers the title, the artist, favorites, history and wrapped. It does not cover the progress bar or the up next row, because the stream sends a title and nothing else, and only when the song changes, so a station you just tuned into stays blank until the next track starts.
 
-Stations with a numeric `id` get the full picture from the rmfon.pl playlist API: time elapsed, what is next, and the break detection behind ad-dodging.
+Every built-in station gets the full picture from its own broadcaster's playlist API, rmfon.pl, radioparadise.com or radiofrance.fr: time elapsed, what is next, and the break detection behind ad-dodging. In `streams.json` those carry a numeric `id` and a `src` naming which API answers for them, `rmf`, `rp` or `rf`.
 
 HLS streams (`.m3u8`) carry nothing at all. They play, they just never say what.
 
@@ -144,7 +144,7 @@ No cloud, no account, no telemetry. Delete a file to reset that part. It is your
 
 ## Disclaimer
 
-ttyfm is an independent client and is not affiliated with, endorsed by, or connected to any radio station or broadcaster. It ships with no stations. It plays whatever streams you add by connecting straight to the stations' own servers, the same way a browser would. All streams, trademarks and content stay the property of their owners. Station listings come from radio-browser.org, which is not affiliated with ttyfm either. The interface takes visual cues from Claude Code, but ttyfm is not affiliated with or endorsed by Anthropic.
+ttyfm is an independent client and is not affiliated with, endorsed by, or connected to any radio station or broadcaster. It ships with no audio and no station of its own. It plays whatever streams you add by connecting straight to the stations' own servers, the same way a browser would. The built-in list is a listing of public stream addresses that RMF, Radio Paradise and Radio France publish themselves, nothing more, and none of them is affiliated with ttyfm. All streams, trademarks and content stay the property of their owners. The rest of the station listings come from radio-browser.org, which is not affiliated with ttyfm either. The interface takes visual cues from Claude Code, but ttyfm is not affiliated with or endorsed by Anthropic.
 
 ## License
 

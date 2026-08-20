@@ -13,6 +13,16 @@ const HOME_DIR = join(homedir(), '.ttyfm')
 const JSON_PATH = resolve(process.argv[2] ?? join(HOME_DIR, 'streams.json'))
 const MEDIAKEYS_LUA = join(here, 'mediakeys.lua')
 
+const WIN_MPV_PATHS = [
+  join(process.env.ProgramFiles ?? 'C:\\Program Files', 'MPV Player', 'mpv.exe'),
+  join(process.env.ProgramFiles ?? 'C:\\Program Files', 'mpv', 'mpv.exe'),
+  join(process.env.LOCALAPPDATA ?? homedir(), 'Programs', 'mpv', 'mpv.exe'),
+  join(process.env.LOCALAPPDATA ?? homedir(), 'Microsoft', 'WinGet', 'Links', 'mpv.exe'),
+  join(homedir(), 'scoop', 'shims', 'mpv.exe'),
+  join(process.env.ProgramData ?? 'C:\\ProgramData', 'chocolatey', 'bin', 'mpv.exe'),
+]
+let MPV_BIN = 'mpv'
+
 let socketSeq = 0
 const nextSocketPath = () =>
   process.platform === 'win32'
@@ -35,8 +45,6 @@ const SWAP_FADE_MS = 300
 const PAUSE_FADE_MS = 350
 const BACKOFF_BASE = 500
 const BACKOFF_MAX = 15_000
-// A note stays on screen this long, and a two-press confirm stays live exactly as long
-// as the prompt asking for it.
 const NOTE_MS = 6_000
 
 const truecolor = /truecolor|24bit/i.test(process.env.COLORTERM ?? '')
@@ -183,7 +191,7 @@ class Mpv {
   start(url, { volume = 100, paused = false, modeAf = null, analyze = true } = {}) {
     this.#socketPath = nextSocketPath()
     this.#proc = spawn(
-      'mpv',
+      MPV_BIN,
       [
         '--no-video',
         '--really-quiet',
@@ -613,8 +621,6 @@ function warmAll(onlyFavs = false) {
   setNote(n ? `warming ${n} station${n === 1 ? '' : 's'} ${Number.isFinite(parkMs()) ? `for ${Math.round(parkMs() / 60000)}m` : 'until quit'}` : 'everything already warm')
 }
 
-// Terminals disagree on delete: backspace sends DEL or BS, and the forward-delete key
-// sends a CSI 3 sequence that carries a modifier tail when shift or fn is held.
 const isDeleteKey = (key) => key === '\x7f' || key === '\x08' || /^\x1b\[3(;\d+)?~$/.test(key)
 
 const setNote = (text) => {
@@ -803,8 +809,6 @@ async function loadJson(path) {
   }
 }
 
-// Everything lives in ~/.ttyfm so a package upgrade can't take your history with it.
-// Older installs kept these next to radio.js, so bring them along the first time.
 function ensureHome() {
   try {
     mkdirSync(HOME_DIR, { recursive: true })
@@ -819,8 +823,6 @@ function ensureHome() {
   }
 }
 
-// Discovery is backed by radio-browser.org: a community stream directory, no key,
-// no account. Their listing is the source for every station ttyfm can add.
 const RB_HOSTS = ['https://all.api.radio-browser.info', 'https://de1.api.radio-browser.info']
 let rbHost = RB_HOSTS[0]
 
@@ -830,6 +832,241 @@ const flagFor = (cc) => {
   if (!/^[A-Z]{2}$/.test(k)) return ''
   return (FLAGS[k] ??= String.fromCodePoint(...[...k].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)))
 }
+
+const RMF_HOSTS = [
+  'rs101-krk',
+  'rs102-krk',
+  'rs103-krk',
+  'rs201-krk',
+  'rs202-krk',
+  'rs203-krk',
+  'rs101-krk-cyfronet',
+  'rs102-krk-cyfronet',
+  'rs103-krk-cyfronet',
+  'rs201-krk-cyfronet',
+  'rs202-krk-cyfronet',
+  'rs203-krk-cyfronet',
+]
+
+const RMF_CATALOG = `
+5|rmf_fm|RMF FM
+6|rmf_maxxx|RMF MAXX
+7|rmf_classic|RMF Classic
+190|rmf_24|RADIO RMF24
+94|rmf_2|RMF 2 Pop
+97|rmf_5|RMF 5 Łagodne przeboje
+25|rmf_80s|RMF 80s
+2|rmf_classic_rock|RMF Classic rock
+3|rmf_dance|RMF Dance
+110|rmf_disco_polo|RMF Disco polo
+15|rmf_gold|RMF Gold
+156|rmf_gamemusic|RMF K-pop
+9|rmf_polskie_przeboje|RMF Polskie przeboje
+116|rmf_relaks|RMF Relaks
+115|rmf_w_pracy|RMF W pracy
+81|rmf_2000|RMF 2000
+27|rmf_hot_new|RMF Hot new
+242|rmf_top8|RMF Jesienny vibe
+161|rmf_latino|RMF Latino
+173|rmf_top4|RMF Przeboje lata 2026
+244|rmf_top10|RMF Top 1000
+266|rmf_true_crime|RMF True Crime
+168|rmf_top|RMF Świąteczne nowości 2025
+148|sizeer_fm|Sizeer FM
+82|rmf_20lat|36 lat RMF FM
+268|rmf_top17|FRESH Dance
+269|rmf_top18|FRESH Polski Hip Hop
+267|rmf_top16|FRESH Pop
+159|rmf_2010|RMF 10s
+236|rmf_20s|RMF 20s
+48|rmf_50s|RMF 50s
+44|rmf_60s|RMF 60s
+45|rmf_70s|RMF 70s
+46|rmf_90s|RMF 90s
+245|rmf_top11|RMF Classic Filmowy Przebój Wszech Czasów
+22|rmf_hop_bec|RMF MAXX Hop Bęc
+274|rmf_maxx_new_hits|RMF MAXX New Hits
+127|npp_rmf_on|RMF Największe polskie przeboje
+111|rmf_niezapomniane_melodie|RMF Niezapomniane melodie
+38|rmf_prl|RMF PRL
+8|rmf_poplista|RMF Poplista
+19|rmf_przeboj_roku|RMF Przebój roku 2025
+128|rmf_top_30_swieta|RMF Top 30 święta
+271|rmf_top20|FRESH Polskie
+28|rmf_alternatywa|RMF Alternatywa
+39|rmf_blues|RMF Blues
+32|rmf_hard_heavy|RMF Hard & Heavy
+37|rmf_hip_hop|RMF Hip hop
+52|rmf_ziom|RMF Klasyka polskiego hip hopu
+29|rmf_club|RMF MAXX Club
+272|rmf_maxx_dance|RMF MAXX Dance
+273|rmf_maxx_rap|RMF MAXX Rap
+65|rmf_piosenka_literacka|RMF Piosenka literacka
+235|rmf_polska_alternatywa|RMF Polska alternatywa
+164|rmf_polska_prywatka|RMF Polska prywatka
+158|rmf_trend_sounds|RMF Polski hip hop
+36|rmf_polski_rock|RMF Polski rock
+1|rmf_rock|RMF Rock
+84|rmf_rock_progresywny|RMF Rock progresywny
+16|rmf_smooth_jazz|RMF Smooth jazz
+49|rmf_szanty|RMF Szanty
+234|rmf_vibe|RMF Vibe
+261|rmf_classic_fmf|FMF CLASSIC
+95|rmf_3|RMF 3 Pop-Rock
+96|rmf_4|RMF 4 Dance & RNB
+109|rmf_80s_disco|RMF 80s disco
+130|rmf_90s_dance|RMF 90s dance
+93|rmf_nostalgia|RMF Ballady
+163|rmf_studencka_impreza|RMF Cafe
+11|rmf_chillout|RMF Chillout
+255|rmf_classicplus_sku|RMF Classic Czas skupienia
+251|rmf_classicplus_zim|RMF Classic Hans Zimmer
+252|rmf_classicplus_wil|RMF Classic John Williams
+253|rmf_classicplus_wer|RMF Classic Klasyka z werwą
+227|rmf_classicplus_min|RMF Classic Mindfulness
+226|rmf_classicplus_wes|RMF Classic Morricone Westerny
+250|rmf_classicplus_osc|RMF Classic Muzyka Oscarowa
+225|rmf_classicplus_pir|RMF Classic Na pirackich wodach
+247|rmf_top13|RMF Classic Oscary 2025
+254|rmf_classicplus_tar|RMF Classic Tarantino
+222|rmf_classicplus_tho|RMF Classic Thor
+223|rmf_classicplus_srd|RMF Classic Śródziemie
+224|rmf_classicplus_cza|RMF Classic Świat Czarodziejów
+243|rmf_top9|RMF Crush
+43|rmf_baby|RMF Dla dzieci
+117|rmf_fitness|RMF Fitness
+118|rmf_fitness_rock|RMF Fitness rock
+80|rmf_koledy|RMF Kolędy
+239|rmf_ladies|RMF Ladies
+237|rmf_leniwa_niedziela|RMF Leniwa niedziela
+14|rmf_love|RMF Love
+194|rmf_maxxx_byd|RMF MAXX Bydgoszcz
+196|rmf_maxxx_cze|RMF MAXX Częstochowa
+212|rmf_maxxx_wal|RMF MAXX Dolny Śląsk
+198|rmf_maxxx_ino|RMF MAXX Inowrocław
+200|rmf_maxxx_knn|RMF MAXX Konin
+201|rmf_maxxx_kra|RMF MAXX Kraków
+202|rmf_maxxx_ksn|RMF MAXX Krosno
+215|rmf_maxxx_zgr|RMF MAXX Lubuskie
+195|rmf_maxxx_cie|RMF MAXX Mazowsze
+204|rmf_maxxx_nsa|RMF MAXX Nowy Sącz
+205|rmf_maxxx_ole|RMF MAXX Oleśnica
+206|rmf_maxxx_opo|RMF MAXX Opole
+207|rmf_maxxx_pil|RMF MAXX Piła
+203|rmf_maxxx_lom|RMF MAXX Podlasie
+210|rmf_maxxx_slu|RMF MAXX Pomorze
+208|rmf_maxxx_poz|RMF MAXX Poznań
+211|rmf_maxxx_szc|RMF MAXX Szczecin
+262|rmf_maxxx_tmz|RMF MAXX Tomaszów Mazowiecki
+197|rmf_maxxx_gda|RMF MAXX Trójmiasto
+213|rmf_maxxx_waw|RMF MAXX Warszawa
+214|rmf_maxxx_wlc|RMF MAXX Włocławek
+209|rmf_maxxx_slk|RMF MAXX Śląsk
+199|rmf_maxxx_kie|RMF MAXX Świętokrzyskie
+33|rmf_muzyka_filmowa|RMF Muzyka filmowa
+86|rmf_muzyka_klasyczna|RMF Muzyka klasyczna
+248|rmf_top14|RMF Na wiosnę
+23|rmf_party|RMF Party
+166|rmf_piosenka_filmowa|RMF Piosenka filmowa
+165|rmf_pobudka|RMF Pobudka
+79|rmf_styl|RMF Styl
+10|rmf_sloneczne_przeboje|RMF Słoneczne przeboje
+171|rmf_top2|RMF Top 2026 disco polo
+12|rmf_bravo|RMF Viral
+238|rmf_w_kuchni|RMF W kuchni
+17|rmf_swieta|RMF Święta
+162|rmf_24_wroc|RMF24 WROCŁAW
+152|radio_gra|Radio Gra Toruń
+`
+
+const RP_CATALOG = `
+0|mp3-192,mp3-128,aac-320|Radio Paradise
+1|mellow-192,mellow-128|Radio Paradise Mellow
+2|rock-192,rock-128|Radio Paradise Rock
+3|global-192,global-128|Radio Paradise Global
+5|eclectic-192,eclectic-128|Radio Paradise Beyond
+42|serenity|Radio Paradise Serenity
+945|kfat-192,kfat-128|Radio Paradise KFAT
+`
+
+const RF_CATALOG = `
+7|fip|FIP
+64|fiprock|FIP Rock
+65|fipjazz|FIP Jazz
+66|fipgroove|FIP Groove
+69|fipworld|FIP Monde
+70|fipnouveautes|FIP Nouveautés
+71|fipreggae|FIP Reggae
+74|fipelectro|FIP Electro
+77|fipmetal|FIP Metal
+`
+
+const SOURCES = [
+  {
+    src: 'rmf',
+    country: 'PL',
+    bitrate: 128,
+    catalog: RMF_CATALOG,
+    mirrors: (mount) => RMF_HOSTS.map((h) => `https://${h}.rmfstream.pl/${mount}`),
+  },
+  {
+    src: 'rp',
+    country: 'US',
+    bitrate: 192,
+    catalog: RP_CATALOG,
+    mirrors: (keys) => keys.split(',').map((k) => `https://stream.radioparadise.com/${k}`),
+  },
+  {
+    src: 'rf',
+    country: 'FR',
+    bitrate: 128,
+    catalog: RF_CATALOG,
+    mirrors: (slug) => [
+      `https://icecast.radiofrance.fr/${slug}-midfi.mp3`,
+      `https://icecast.radiofrance.fr/${slug}-hifi.aac`,
+    ],
+  },
+]
+
+let builtinHits = null
+function builtinStations() {
+  return (builtinHits ??= SOURCES.flatMap((s) =>
+    s.catalog
+      .trim()
+      .split('\n')
+      .map((line) => {
+        const [id, stream, ...rest] = line.split('|')
+        return {
+          uuid: null,
+          src: s.src,
+          playlistId: Number(id),
+          name: rest.join('|'),
+          countrycode: s.country,
+          codec: 'MP3',
+          bitrate: s.bitrate,
+          hls: false,
+          votes: 0,
+          mirrors: s.mirrors(stream),
+        }
+      }),
+  ))
+}
+
+function builtinSearch(query) {
+  const q = query.trim().toLowerCase()
+  if (!q) return builtinStations()
+  const scored = []
+  builtinStations().forEach((st, i) => {
+    const name = st.name.toLowerCase()
+    const at = name.indexOf(q)
+    if (at < 0) return
+    const rank = at === 0 ? 0 : /\s/.test(name[at - 1]) ? 1 : 2
+    scored.push({ st, rank, i })
+  })
+  return scored.sort((a, b) => a.rank - b.rank || a.i - b.i).map((x) => x.st)
+}
+
+const builtinHosts = /(^|\.)(rmfstream\.pl|radioparadise\.com|radiofrance\.fr)$/i
 
 async function rbSearch(query) {
   const q = query.trim()
@@ -855,14 +1092,13 @@ async function rbSearch(query) {
   throw lastErr ?? new Error('search failed')
 }
 
-// The directory lists one row per stream URL, so the same station shows up several
-// times. Collapse those into one entry whose URLs become ttyfm mirrors.
 function groupResults(rows) {
   const byName = new Map()
   for (const r of rows) {
     const url = r.url_resolved || r.url
     const name = decode(r.name ?? '').replace(/\s+/g, ' ').trim()
     if (!url || !/^https?:\/\//i.test(url) || !name) continue
+    if (builtinHosts.test(url.replace(/^https?:\/\//, '').split('/')[0].split(':')[0])) continue
     const key = `${name.toLowerCase()}::${r.countrycode ?? ''}`
     const hit = byName.get(key)
     if (hit) {
@@ -881,12 +1117,11 @@ function groupResults(rows) {
       mirrors: [url],
     })
   }
-  // HLS carries no icy metadata, so it plays but never names a song. Rank it last.
   return [...byName.values()].sort((a, b) => a.hls - b.hls || b.votes - a.votes).slice(0, 40)
 }
 
 function addStation(hit) {
-  const uid = hit.uuid ? `rb:${hit.uuid}` : `url:${hit.mirrors[0]}`
+  const uid = hit.src ? `${hit.src}:${hit.playlistId}` : hit.uuid ? `rb:${hit.uuid}` : `url:${hit.mirrors[0]}`
   const dupe = stations.find((s) => s.uid === uid || s.mirrors.some((m) => hit.mirrors.includes(m)))
   if (dupe) {
     setNote(`already added: ${dupe.name}`)
@@ -896,7 +1131,8 @@ function addStation(hit) {
     uid,
     name: hit.name,
     flag: flagFor(hit.countrycode),
-    playlistId: null,
+    src: hit.src ?? null,
+    playlistId: hit.playlistId ?? null,
     mirrors: [...new Set(hit.mirrors)],
   }
   stations.push(st)
@@ -934,8 +1170,6 @@ function removeStation(st) {
   }
 }
 
-// The startup-station setting lists every station by name, so it has to be rebuilt
-// whenever the station list itself changes.
 function refreshStationDefs() {
   const d = SETTING_DEFS.find((x) => x.key === 'startupStation')
   d.values = ['last', 'default']
@@ -953,6 +1187,7 @@ function saveStations() {
     name: s.name,
     ...(s.flag ? { flag: s.flag } : {}),
     ...(s.playlistId != null ? { id: s.playlistId } : {}),
+    ...(s.src && s.src !== 'rmf' ? { src: s.src } : {}),
     mirrors: s.mirrors,
   }))
   writeFile(JSON_PATH, JSON.stringify({ stations: out }, null, 4)).catch(() => {})
@@ -969,7 +1204,6 @@ async function loadPersisted() {
   } catch {
     firstRun = true
   }
-  // Stations used to be identified by their rmfon playlist id. They are uids now.
   const toUid = (v) => (/^\d+$/.test(String(v)) ? `rmf:${v}` : String(v))
   settings.favStations = [...new Set((settings.favStations ?? []).map(toUid))]
   if (settings.lastStationId != null) settings.lastStationId = toUid(settings.lastStationId)
@@ -1105,8 +1339,6 @@ function toggleFavorite() {
   toggleFavoriteTrack(cur)
 }
 
-// Stations without a playlist API get their song info from the stream itself.
-// Icecast and SHOUTcast push `icy-title` at every track change; HLS pushes nothing.
 const ICY_JUNK = /^(unknown|n\/a|null|advert(isement)?|commercial|reklama|jingle|live stream|no title)$/i
 
 function parseIcy(raw, st) {
@@ -1153,31 +1385,80 @@ function onIcyMeta(p) {
   render()
 }
 
-async function fetchPlaylistFor(st) {
-  if (st?.playlistId == null) return { icy: true }
+async function fetchJson(url) {
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), 8000)
   try {
-    const res = await fetch(`https://api.rmfon.pl/stations/${st.playlistId}/playlist`, {
-      signal: ac.signal,
-      headers: { 'User-Agent': 'ttyfm' },
-    })
+    const res = await fetch(url, { signal: ac.signal, headers: { 'User-Agent': 'ttyfm' } })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const data = await res.json()
-    if (!Array.isArray(data)) throw new Error('unexpected payload')
-    return {
-      tracks: data.map((t) => ({
-        ...t,
-        author: decode(t.author),
-        title: decode(t.title),
-        recordTitle: decode(t.recordTitle),
-      })),
-      fetchedAt: Date.now(),
-    }
-  } catch (err) {
-    return { error: err.name === 'AbortError' ? 'playlist timeout' : err.message }
+    return await res.json()
   } finally {
     clearTimeout(timer)
+  }
+}
+
+const PLAYLISTS = {
+  async rmf(id) {
+    const data = await fetchJson(`https://api.rmfon.pl/stations/${id}/playlist`)
+    if (!Array.isArray(data)) throw new Error('unexpected payload')
+    return data.map((t) => ({
+      ...t,
+      author: decode(t.author),
+      title: decode(t.title),
+      recordTitle: decode(t.recordTitle),
+    }))
+  },
+
+  async rp(chan) {
+    const d = await fetchJson(`https://api.radioparadise.com/api/get_block?chan=${chan}&bitrate=4&info=true`)
+    const songs = Object.keys(d.song ?? {})
+      .sort((a, b) => Number(a) - Number(b))
+      .map((k) => d.song[k])
+    if (!songs.length) return []
+    const total = songs.reduce((n, s) => n + (Number(s.duration) || 0), 0)
+    const elapsed = total - (Number(d.length) * 1000 - Number(d.cue))
+    let end = -elapsed
+    return songs.map((s, i) => {
+      const len = (Number(s.duration) || 0) / 1000
+      end += Number(s.duration) || 0
+      return {
+        order: i,
+        author: decode(s.artist ?? ''),
+        title: decode(s.title ?? ''),
+        recordTitle: decode(s.album ?? ''),
+        lenght: Math.round(len),
+        uptime: Math.round(end / 1000),
+      }
+    })
+  },
+
+  async rf(id) {
+    const d = await fetchJson(`https://api.radiofrance.fr/livemeta/pull/${id}`)
+    const now = Date.now() / 1000
+    const steps = Object.values(d.steps ?? {})
+      .filter((s) => s.start && s.end && s.title && s.authors)
+      .sort((a, b) => a.start - b.start)
+    const playing = steps.findIndex((s) => s.start <= now && now <= s.end)
+    const ahead = steps.findIndex((s) => s.start > now)
+    const at = playing < 0 ? (ahead < 0 ? steps.length : ahead) : playing
+    return steps.map((s, i) => ({
+      order: playing < 0 && i >= at ? i - at + 1 : i - at,
+      author: decode(s.authors),
+      title: decode(s.title),
+      recordTitle: decode(s.albumTitle ?? ''),
+      lenght: Math.round(s.end - s.start),
+      uptime: Math.round(s.end - now),
+    }))
+  },
+}
+
+async function fetchPlaylistFor(st) {
+  const ask = st?.src && PLAYLISTS[st.src]
+  if (!ask || st.playlistId == null) return { icy: true }
+  try {
+    return { tracks: await ask(st.playlistId), fetchedAt: Date.now() }
+  } catch (err) {
+    return { error: err.name === 'AbortError' ? 'playlist timeout' : err.message }
   }
 }
 
@@ -1572,8 +1853,6 @@ function duckCheck() {
 
 async function stationLooksClean(st) {
   if (st.playlistId == null) {
-    // No playlist API to interrogate, so only trust a warm player that is
-    // currently reporting a real song title over icy.
     const p = playerFor(st)
     return Boolean(p && Date.now() - p.icyAt < 300_000 && icyTrackFor(st))
   }
@@ -1803,10 +2082,17 @@ function render() {
       out.push(`${pad}     ${C.accent}${spinnerFrame()}${C.reset} ${C.dim}${C.italic}searching…${C.reset}`)
     } else if (state.discError) {
       out.push(`${pad}     ${C.yellow}⚠${C.reset} ${C.dim}${clip(state.discError, inner - 8)}${C.reset}`)
-    } else if (!state.discRan) {
-      out.push(`${pad}     ${C.dim}${C.italic}50k stations — try "kexp", "jazz" or "rmf"${C.reset}`)
-    } else if (!total) {
-      out.push(`${pad}     ${C.dim}nothing found — try a shorter name${C.reset}`)
+    } else if (!state.discQuery.trim()) {
+      out.push(
+        `${pad}     ${C.dim}${C.italic}${total} stations with live playlists — or type to search 50k more${C.reset}`,
+      )
+    }
+    if (!total && !state.discBusy) {
+      out.push(
+        state.discRan
+          ? `${pad}     ${C.dim}nothing found — try a shorter name${C.reset}`
+          : `${pad}     ${C.dim}${C.italic}50k stations — try "kexp", "jazz" or "rmf"${C.reset}`,
+      )
     } else {
       const bottomEst = 5 + (state.showHelp ? 1 : 0) + (state.swapping ? 1 : 0)
       const noteEst =
@@ -2084,7 +2370,6 @@ function render() {
     const heart = isFavorite(cur) ? ` ${C.accent}♥${C.reset}` : ''
     out.push(`${pad}${C.accent}⏺${C.reset} ${C.text}${C.bold}${title}${C.reset} ${C.dim}— ${clip(cur.author, inner - 12)}${C.reset}${heart}`)
     const stallTag = !flowing && !state.paused ? ` ${C.accentDim}${spinnerFrame()}${C.reset}` : ''
-    // icy gives a title and nothing else, so there is no length to draw a bar against
     out.push(
       len
         ? `${pad}  ${C.dim}⎿${C.reset}  ${bar(elapsed / len, Math.min(40, Math.max(4, inner - 20)))} ${C.dim}${mmss(elapsed)} / ${mmss(len)}${C.reset}${stallTag}`
@@ -2211,9 +2496,12 @@ let discEpoch = 0
 function queueDiscoverSearch() {
   clearTimeout(discTimer)
   state.discError = null
+  const local = builtinSearch(state.discQuery)
+  state.discResults = local
+  state.discCursor = 0
+  state.discScroll = 0
   if (!state.discQuery.trim()) {
     discEpoch++
-    state.discResults = []
     state.discBusy = false
     state.discRan = false
     return
@@ -2224,12 +2512,10 @@ function queueDiscoverSearch() {
     try {
       const hits = await rbSearch(state.discQuery)
       if (mine !== discEpoch) return
-      state.discResults = hits
-      state.discCursor = 0
-      state.discScroll = 0
+      state.discResults = [...local, ...hits]
     } catch (err) {
       if (mine !== discEpoch) return
-      state.discResults = []
+      state.discResults = local
       state.discError = err.message
     } finally {
       if (mine === discEpoch) {
@@ -2294,9 +2580,7 @@ function onKey(buf) {
       render()
       return
     }
-    // Swallow every other escape sequence, or its bracket-and-letter tail types itself.
     if (key.startsWith('\x1b')) return
-    // A paste arrives as one chunk, so take everything printable in it.
     const typed = [...key].filter((c) => c >= ' ' && c !== '\x7f').join('')
     if (typed) {
       state.discQuery = (state.discQuery + typed).slice(0, 60)
@@ -2591,34 +2875,49 @@ function onKey(buf) {
 
 const MPV_HINT =
   process.platform === 'win32'
-    ? 'winget install mpv    (or: scoop install mpv)'
+    ? 'scoop install mpv    (or: winget install mpv)'
     : process.platform === 'darwin'
       ? 'brew install mpv'
       : 'sudo apt install mpv    (or your distro package manager)'
 
-function mpvPresent() {
+function mpvRuns(bin) {
   return new Promise((done) => {
-    const p = spawn('mpv', ['--version'], { stdio: 'ignore' })
+    const p = spawn(bin, ['--version'], { stdio: 'ignore' })
     p.on('error', () => done(false))
     p.on('exit', (code) => done(code === 0))
   })
+}
+
+async function mpvPresent() {
+  if (await mpvRuns(MPV_BIN)) return true
+  if (process.platform !== 'win32') return false
+  for (const bin of WIN_MPV_PATHS) {
+    if (!existsSync(bin)) continue
+    if (await mpvRuns(bin)) {
+      MPV_BIN = bin
+      return true
+    }
+  }
+  return false
 }
 
 function normalizeStations(list) {
   return list
     .map((s) => {
       const mirrors = [...new Set((s.mirrors ?? []).filter((m) => typeof m === 'string' && m))]
-      // A numeric `id` means the rmfon playlist API knows this station.
       const playlistId = Number.isFinite(Number(s.id)) && s.id !== null && s.id !== '' ? Number(s.id) : null
-      const uid = s.uid ?? (playlistId != null ? `rmf:${playlistId}` : mirrors[0] ? `url:${mirrors[0]}` : null)
-      return { uid, name: s.name, flag: s.flag ?? '', playlistId, mirrors }
+      const src = playlistId == null ? null : PLAYLISTS[s.src] ? s.src : 'rmf'
+      const uid = s.uid ?? (src ? `${src}:${playlistId}` : mirrors[0] ? `url:${mirrors[0]}` : null)
+      return { uid, name: s.name, flag: s.flag ?? '', src, playlistId, mirrors }
     })
     .filter((s) => s.uid && s.mirrors.length && s.name)
 }
 
+const GENERIC_BRANDS = new Set(['radio', 'the', 'fm', 'music', 'hits', 'mix'])
+
 function refreshJingleRe() {
   const brands = [...new Set(stations.map((s) => s.name.split(' ')[0].replace(/[^\w]/g, '')))].filter(
-    (b) => b.length > 2,
+    (b) => b.length > 2 && !GENERIC_BRANDS.has(b.toLowerCase()),
   )
   jingleRe = brands.length ? new RegExp(`\\b(${brands.join('|')})\\b`, 'i') : null
 }
@@ -2677,7 +2976,6 @@ async function main() {
   if (Number.isFinite(wantVol)) {
     state.volume = Math.max(0, Math.min(100, Math.round(wantVol)))
   }
-  // Nothing shipped with a station list, so the first screen is the one that fills it.
   if (state.station) {
     startPrimary()
     probeMirrors()

@@ -1,6 +1,6 @@
 {
   "name": "ttyfm",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Internet radio for your terminal, with seamless failover, live EQ and ad-dodging",
   "type": "module",
   "bin": {
