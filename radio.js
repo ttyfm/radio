@@ -852,7 +852,7 @@ const RMF_CATALOG = `
 5|rmf_fm|RMF FM
 6|rmf_maxxx|RMF MAXX
 7|rmf_classic|RMF Classic
-190|rmf_24|RADIO RMF24
+190|rmf_24|RMF24
 94|rmf_2|RMF 2 Pop
 97|rmf_5|RMF 5 Łagodne przeboje
 25|rmf_80s|RMF 80s
@@ -1063,7 +1063,7 @@ function builtinSearch(query) {
     const name = st.name.toLowerCase()
     const at = name.indexOf(q)
     if (at < 0) {
-      if (!squash(name).includes(sq)) return
+      if (sq.length < 3 || !squash(name).includes(sq)) return
       scored.push({ st, rank: 3, i })
       return
     }
@@ -1074,6 +1074,12 @@ function builtinSearch(query) {
 }
 
 const builtinHosts = /(^|\.)(rmfstream\.pl|radioparadise\.com|radiofrance\.fr)$/i
+
+let builtinNames = null
+const isBuiltinName = (name) => {
+  builtinNames ??= new Set(builtinStations().map((s) => s.name.toLowerCase()))
+  return builtinNames.has(name.toLowerCase())
+}
 
 async function rbSearch(query) {
   const q = query.trim()
@@ -1106,6 +1112,7 @@ function groupResults(rows) {
     const name = decode(r.name ?? '').replace(/\s+/g, ' ').trim()
     if (!url || !/^https?:\/\//i.test(url) || !name) continue
     if (builtinHosts.test(url.replace(/^https?:\/\//, '').split('/')[0].split(':')[0])) continue
+    if (isBuiltinName(name)) continue
     const key = `${name.toLowerCase()}::${r.countrycode ?? ''}`
     const hit = byName.get(key)
     if (hit) {
@@ -2094,19 +2101,21 @@ function render() {
         `${pad}     ${C.dim}${C.italic}${total} stations with live playlists — or type to search 50k more${C.reset}`,
       )
     }
-    if (!total && !state.discBusy) {
-      out.push(
-        state.discRan
-          ? `${pad}     ${C.dim}nothing found — try a shorter name${C.reset}`
-          : `${pad}     ${C.dim}${C.italic}50k stations — try "kexp", "jazz" or "rmf"${C.reset}`,
-      )
+    if (!total) {
+      if (!state.discBusy) {
+        out.push(
+          state.discRan
+            ? `${pad}     ${C.dim}nothing found — try a shorter name${C.reset}`
+            : `${pad}     ${C.dim}${C.italic}50k stations — try "kexp", "jazz" or "rmf"${C.reset}`,
+        )
+      }
     } else {
       const bottomEst = 5 + (state.showHelp ? 1 : 0) + (state.swapping ? 1 : 0)
       const noteEst =
         (state.note && Date.now() - state.noteAt < NOTE_MS ? 2 : 0) +
         (state.failStreak >= book.entries.length && book.entries.length ? 2 : 0)
       const listRows = Math.max(4, (process.stdout.rows || 24) - out.length - bottomEst - noteEst - 3)
-      state.discCursor = Math.min(state.discCursor, total - 1)
+      state.discCursor = Math.max(0, Math.min(state.discCursor, total - 1))
       if (state.discCursor < state.discScroll) state.discScroll = state.discCursor
       if (state.discCursor >= state.discScroll + listRows) state.discScroll = state.discCursor - listRows + 1
       out.push(state.discScroll > 0 ? `${pad}     ${C.dim}… ${state.discScroll} more ↑${C.reset}` : '')
@@ -2544,6 +2553,7 @@ function openDiscover(open = true) {
   if (open) {
     state.discCursor = 0
     state.discScroll = 0
+    queueDiscoverSearch()
   }
 }
 
