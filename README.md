@@ -6,7 +6,7 @@ ttyfm plays live radio through mpv and wraps it in a fast TUI: what's on now, an
 
 Claude-inspired design: the same bullets, tree branches and boxed prompt, so it fits next to the tools already in your terminal.
 
-[Install](#install) · [Keys](#keys) · [Failover](#failover) · [Breaks](#breaks) · [Equalizer](#equalizer) · [Wrapped](#wrapped) · [Stations](#stations) · [Song titles](#song-titles) · [Data](#data) · [License](#license)
+[Install](#install) · [Keys](#keys) · [Failover](#failover) · [Mixing](#mixing) · [Breaks](#breaks) · [Equalizer](#equalizer) · [Wrapped](#wrapped) · [Stations](#stations) · [Song titles](#song-titles) · [Data](#data) · [License](#license)
 
 ```
   ✳ tty.fm                                                  ● live
@@ -38,7 +38,7 @@ You need Node 18 or newer and [mpv](https://mpv.io):
 ```sh
 brew install mpv       # macOS
 sudo apt install mpv   # Debian, Ubuntu
-winget install mpv     # Windows
+scoop install mpv      # Windows
 ```
 
 On Windows, run it in Windows Terminal.
@@ -76,7 +76,15 @@ The part with the most work in it and the least proof it is there. When a stream
 
 A watchdog catches the quiet failures as well: a stream that stops moving gets hopped even when mpv still says everything is fine.
 
-Station switching runs on the same code, which is why changing stations sounds like a crossfade instead of a gap.
+Station switching runs on the same code, which is why changing stations sounds like a crossfade instead of a gap. See [Mixing](#mixing).
+
+## Mixing
+
+Changing station is a 4 second blend, not a cut. Stepping through stations with the arrows waits until you stop pressing before it tunes, so running down the list is one transition at the end rather than five interrupted ones, and the plate at the bottom shows where you are heading while you move. The two stations overlap on an equal-power curve while a highpass sweeps the bass out of the one you are leaving and into the one you are arriving at, which is how a DJ swaps the low end. `Station switch` in settings has `Quick crossfade` for the old 300ms fade and `Cut` for none. Mirror changes inside one station always use the quick fade, because both sides carry the same audio and there is nothing to blend.
+
+`Mix between songs` is the other one, and it is off by default. Turned on, ttyfm mixes one song into the next on the same station: the outgoing song stutters into an accelerating loop over its last two seconds and speeds up 6%, its bass drops away, and the next song is already playing underneath at full low end. It only works on stations with a playlist, because the mix has to know exactly when the song ends. See [Song titles](#song-titles).
+
+That trick costs something, and the cost is time. Radio is one stream, so the next song does not exist yet when the current one is ending. To overlap them, ttyfm listens a few seconds behind live and opens a second connection at the live edge, which is therefore a few seconds into the future compared to what you are hearing. The mix spends that gap. To earn it back it plays about 1.5% slow between songs, pitch corrected, which is well under what anyone hears, and it takes whatever length of mix the banked time can pay for, from about 2.5 seconds up to 6.5. If the gap is too thin the mix is skipped and the song change is ordinary.
 
 ## Breaks
 

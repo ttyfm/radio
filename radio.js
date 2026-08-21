@@ -42,6 +42,20 @@ const STANDBY_TIMEOUT = 12_000
 const LIVE_TARGET = 2
 const LIVE_TRIM_ABOVE = 4
 const SWAP_FADE_MS = 300
+const STEP_SETTLE = 300
+const MIX_MS = 4200
+const MIX_CMD_EVERY = 60
+const MIX_BASS_TOP = 700
+const SONGMIX_MAX = 6500
+const SONGMIX_MIN = 2500
+const SONGMIX_BUDGET = 10
+const SONGMIX_TAIL = 3.5
+const SONGMIX_SLOW_MAX = 0.985
+const SONGMIX_ARM = 40
+const SONGMIX_GAP = 4
+const ROLL_STEPS = [500, 500, 250, 250, 125, 125, 125, 125]
+const ROLL_MS = ROLL_STEPS.reduce((a, b) => a + b, 0)
+const ROLL_SPEED = 1.06
 const PAUSE_FADE_MS = 350
 const BACKOFF_BASE = 500
 const BACKOFF_MAX = 15_000
@@ -316,6 +330,8 @@ function spawnPlayer(url, { volume, paused, station, analyze = true }) {
     bufferingSince: 0,
     pos: null,
     firstPos: null,
+    jumped: false,
+    speedApplied: 1,
     progressed: false,
     ipcFailed: false,
     lastProgressAt: Date.now(),
@@ -430,6 +446,7 @@ const book = {
     const best = [...from].sort(
       (a, b) => a.fails - b.fails || a.latency - b.latency || a.lastUsedAt - b.lastUsedAt,
     )[0]
+    if (!best) return null
     best.lastUsedAt = Date.now()
     return best.url
   },
@@ -467,6 +484,7 @@ const state = {
   note: null,
   noteAt: 0,
   swapping: false,
+  mixing: false,
   rejoining: false,
   warming: null,
   swapStartedAt: 0,
@@ -534,6 +552,7 @@ function parkPlayer(p, { evict = true } = {}) {
   p.onDeath = null
   p.mpv.send(['af', 'remove', '@eq'])
   p.mpv.send(['af', 'remove', '@mode'])
+  p.mpv.send(['af', 'remove', '@xf'])
   const ms = parkMs()
   const entry = { player: p, until: Date.now() + ms, timer: null, kind: evict ? 'organic' : 'warm' }
   if (Number.isFinite(ms)) entry.timer = setTimeout(() => unparkEntry(entry), ms)
@@ -712,6 +731,8 @@ const sessionStart = Date.now()
 const settings = {
   breakAudio: 'off',
   audioMode: 'normal',
+  switchStyle: 'blend',
+  songMix: 'off',
   startupStation: 'last',
   startupVolume: 'last',
   keepWarm: '2m',
@@ -734,6 +755,18 @@ const SETTING_DEFS = [
     label: 'Audio mode',
     values: ['normal', 'bass', 'rave', 'night'],
     labels: { normal: 'Normal', bass: 'Bass boost', rave: 'Rave (loud + distorted)', night: 'Night (even loudness)' },
+  },
+  {
+    key: 'switchStyle',
+    label: 'Station switch',
+    values: ['blend', 'quick', 'cut'],
+    labels: { blend: 'Blend (DJ-style, 4s)', quick: 'Quick crossfade', cut: 'Cut' },
+  },
+  {
+    key: 'songMix',
+    label: 'Mix between songs',
+    values: ['off', 'on'],
+    labels: { off: 'Default (off)', on: 'On (runs a few seconds behind)' },
   },
   {
     key: 'breakAudio',
@@ -1056,7 +1089,7 @@ const squash = (s) => s.replace(/(.)\1+/g, '$1')
 
 function builtinSearch(query) {
   const q = query.trim().toLowerCase()
-  if (!q) return builtinStations()
+  if (!q) return [...builtinStations()]
   const sq = squash(q)
   const scored = []
   builtinStations().forEach((st, i) => {
@@ -1073,12 +1106,21 @@ function builtinSearch(query) {
   return scored.sort((a, b) => a.rank - b.rank || a.i - b.i).map((x) => x.st)
 }
 
-const builtinHosts = /(^|\.)(rmfstream\.pl|radioparadise\.com|radiofrance\.fr)$/i
+const builtinHosts = /(^|\.)(rmfstream\.pl|rmfstream\d*\.interia\.pl|radioparadise\.com|radiofrance\.fr|fipradio\.fr)$/i
+
+const bareName = (name) =>
+  name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/\s*[([][^)\]]*[)\]]\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 
 let builtinNames = null
 const isBuiltinName = (name) => {
-  builtinNames ??= new Set(builtinStations().map((s) => s.name.toLowerCase()))
-  return builtinNames.has(name.toLowerCase())
+  builtinNames ??= new Set(builtinStations().map((s) => squash(bareName(s.name))))
+  return builtinNames.has(squash(bareName(name)))
 }
 
 async function rbSearch(query) {
@@ -1179,7 +1221,7 @@ function removeStation(st) {
       cancelSwap()
       primary?.mpv.stop()
       primary = null
-      state.showDiscover = true
+      openDiscover(true)
     }
   }
 }
@@ -1430,7 +1472,8 @@ const PLAYLISTS = {
       .map((k) => d.song[k])
     if (!songs.length) return []
     const total = songs.reduce((n, s) => n + (Number(s.duration) || 0), 0)
-    const elapsed = total - (Number(d.length) * 1000 - Number(d.cue))
+    const left = Number(d.length) * 1000 - Number(d.cue)
+    const elapsed = Number.isFinite(left) ? Math.max(0, total - left) : 0
     let end = -elapsed
     return songs.map((s, i) => {
       const len = (Number(s.duration) || 0) / 1000
@@ -1542,6 +1585,8 @@ function cmdPause(p, want) {
 }
 
 function externalPauseSync(want) {
+  endMix()
+  cancelSongMix()
   state.paused = want
   if (want) {
     state.pausedSince = Date.now()
@@ -1567,7 +1612,8 @@ function externalPauseSync(want) {
       failover('rejoining live', { blame: false })
     } else {
       const backlog = primary?.cacheSeconds ?? 0
-      if (backlog > LIVE_TARGET + 1) primary?.mpv.seek(backlog - LIVE_TARGET)
+      const target = mixBudget() ? SONGMIX_BUDGET - 2 : LIVE_TARGET
+      if (backlog > target + 1) primary?.mpv.seek(backlog - target)
       else state.pausedTotal += pausedFor
       if (primary) primary.lastProgressAt = Date.now()
       standby?.mpv.setPause(false)
@@ -1578,6 +1624,11 @@ function externalPauseSync(want) {
 }
 
 function cancelSwap() {
+  endMix()
+  cancelSongMix()
+  clearTimeout(pendingTimer)
+  pendingTimer = null
+  pendingStation = null
   if (!state.swapping) return
   swapEpoch++
   standby?.mpv.stop()
@@ -1587,12 +1638,40 @@ function cancelSwap() {
   state.warming = null
 }
 
+let pendingStation = null
+let pendingTimer = null
+
+function commitPending() {
+  clearTimeout(pendingTimer)
+  pendingTimer = null
+  const st = pendingStation
+  pendingStation = null
+  if (!st || st === state.station) return
+  lastFleeAt = Date.now()
+  tuneTo(stations.indexOf(st))
+}
+
+function queueStation(st) {
+  if (!st) return
+  clearTimeout(pendingTimer)
+  if (st === state.station && !state.mixing) {
+    pendingStation = null
+    pendingTimer = null
+    return
+  }
+  pendingStation = st
+  pendingTimer = setTimeout(() => {
+    commitPending()
+    render()
+  }, STEP_SETTLE)
+}
+
 function stepStation(dir) {
   const order = radioSorted()
   if (!order.length) return
-  const i = Math.max(0, order.indexOf(state.station))
-  lastFleeAt = 0
-  tuneTo(stations.indexOf(order[(i + dir + order.length) % order.length]))
+  const from = pendingStation ?? state.station
+  const i = Math.max(0, order.indexOf(from))
+  queueStation(order[(i + dir + order.length) % order.length])
 }
 
 let lastMediaAt = 0
@@ -1638,6 +1717,7 @@ function tuneTo(index) {
   ) {
     state.ducked = true
     state.duckApplied = duckLevel()
+    duckStation = st
   }
   if (primary && !primary.dead && primary.station === st) {
     fetchPlaylistFor(st).then((res) => {
@@ -1672,9 +1752,10 @@ function tuneTo(index) {
     if (primary.icyTitle !== null) onIcyMeta(primary)
     applyAudioMode()
     primary.lastProgressAt = Date.now()
-    if (primary.cacheSeconds > LIVE_TARGET + 1) {
+    const target = mixBudget() ? SONGMIX_BUDGET - 2 : LIVE_TARGET
+    if (primary.cacheSeconds > target + 1) {
       primary.lastTrimAt = Date.now()
-      primary.mpv.seek(primary.cacheSeconds - LIVE_TARGET)
+      primary.mpv.seek(primary.cacheSeconds - target)
     }
     const parkable = old && !old.dead && !old.stale
     if (state.paused) {
@@ -1721,29 +1802,134 @@ function fadeVolume(from, to, ms, done) {
   }, ms / steps)
 }
 
+let mixTimer = null
+let mixEpoch = 0
+let mixSettle = null
+
+function endMix() {
+  const settle = mixSettle
+  mixSettle = null
+  clearInterval(mixTimer)
+  mixTimer = null
+  mixEpoch++
+  state.mixing = false
+  settle?.()
+}
+
 function crossfade(oldP, newP, { keepOld = false } = {}) {
+  endMix()
+  const style = settings.switchStyle
+  const sameStation = oldP && newP && oldP.station === newP.station
+  if (style === 'cut' || !oldP || !newP || oldP.dead || newP.dead) {
+    newP?.mpv.setVolume(mpvVol(effVol()))
+    if (keepOld) oldP?.mpv.setVolume(0)
+    else oldP?.mpv.stop()
+    return
+  }
+  if (style !== 'blend' || sameStation) return quickFade(oldP, newP, { keepOld })
+  blendMix(oldP, newP, { keepOld })
+}
+
+function quickFade(oldP, newP, { keepOld = false } = {}) {
   const steps = Math.max(6, Math.round(SWAP_FADE_MS / 15))
   let i = 0
-  const iv = setInterval(() => {
+  let oldVol = effVol()
+  const finish = () => {
+    if (mixSettle === finish) mixSettle = null
+    clearInterval(mixTimer)
+    mixTimer = null
+    newP?.mpv.setVolume(mpvVol(effVol()))
+    if (keepOld) oldP?.mpv.setVolume(0)
+    else fadeOutStop(oldP, oldVol)
+  }
+  mixSettle = finish
+  mixTimer = setInterval(() => {
     i++
     const k = i / steps
     newP?.mpv.setVolume(mpvVol(effVol() * k))
-    if (!oldP?.stale) oldP?.mpv.setVolume(mpvVol(effVol() * (1 - k)))
-    if (i >= steps) {
-      clearInterval(iv)
-      newP?.mpv.setVolume(mpvVol(effVol()))
-      if (keepOld) oldP?.mpv.setVolume(0)
-      else oldP?.mpv.stop()
-    }
+    oldVol = effVol() * (1 - k)
+    if (!oldP?.stale) oldP?.mpv.setVolume(mpvVol(oldVol))
+    if (i >= steps) finish()
   }, SWAP_FADE_MS / steps)
 }
 
+function fadeOutStop(p, from) {
+  if (!p) return
+  if (p.dead || !(from > 3)) return p.mpv.stop()
+  const steps = 8
+  let i = 0
+  const iv = setInterval(() => {
+    i++
+    p.mpv.setVolume(mpvVol((from * (steps - i)) / steps))
+    if (i >= steps) {
+      clearInterval(iv)
+      p.mpv.stop()
+    }
+  }, 22)
+}
+
+function blendMix(oldP, newP, { keepOld = false, ms = MIX_MS, roll = false } = {}) {
+  const epoch = ++mixEpoch
+  const hz = (p, v) => p.mpv.send(['af-command', 'xf', 'frequency', String(Math.round(v)), 'highpass'])
+  newP.mpv.send(['af', 'add', `@xf:lavfi=[highpass=f=${MIX_BASS_TOP}]`])
+  oldP.mpv.send(['af', 'add', '@xf:lavfi=[highpass=f=20]'])
+  newP.mpv.setVolume(0)
+  state.mixing = true
+  const startAt = Date.now()
+  const rollAt = roll && ms > ROLL_MS + 500 ? startAt + ms - ROLL_MS : 0
+  let oldVol = effVol()
+  let rollStep = 0
+  let nextRoll = rollAt
+  let lastCmd = startAt
+  const settle = () => {
+    if (mixSettle === settle) mixSettle = null
+    if (mixTimer) {
+      clearInterval(mixTimer)
+      mixTimer = null
+    }
+    if (epoch === mixEpoch) state.mixing = false
+    newP.mpv.send(['af', 'remove', '@xf'])
+    oldP.mpv.send(['af', 'remove', '@xf'])
+    if (rollAt) oldP.mpv.send(['set_property', 'speed', 1])
+    if (newP === primary) newP.mpv.setVolume(mpvVol(effVol()))
+    if (keepOld) oldP.mpv.setVolume(0)
+    else fadeOutStop(oldP, oldVol)
+  }
+  mixSettle = settle
+  mixTimer = setInterval(() => {
+    const now = Date.now()
+    if (epoch !== mixEpoch || shuttingDown || oldP.dead || newP.dead) return settle()
+    const k = Math.min(1, (now - startAt) / ms)
+    const vol = effVol()
+    newP.mpv.setVolume(mpvVol(vol * Math.sin((k * Math.PI) / 2)))
+    oldVol = vol * Math.cos((k * Math.PI) / 2)
+    if (!oldP.stale) oldP.mpv.setVolume(mpvVol(oldVol))
+    if (now - lastCmd >= MIX_CMD_EVERY) {
+      lastCmd = now
+      const swap = Math.min(1, k / 0.65)
+      hz(oldP, 20 + (MIX_BASS_TOP - 20) * swap)
+      hz(newP, MIX_BASS_TOP - (MIX_BASS_TOP - 20) * swap)
+    }
+    if (rollAt && now >= nextRoll && rollStep < ROLL_STEPS.length) {
+      const beat = ROLL_STEPS[rollStep]
+      oldP.mpv.send(['seek', -beat / 1000, 'relative+exact'])
+      if (!rollStep) oldP.mpv.send(['set_property', 'speed', ROLL_SPEED])
+      nextRoll = now + beat
+      rollStep++
+    }
+    if (k >= 1) settle()
+  }, 25)
+}
+
 function startPrimary() {
-  primary = spawnPlayer(book.pick(), { volume: 0, paused: false })
+  const url = book.pick()
+  if (!url) return
+  primary = spawnPlayer(url, { volume: 0, paused: false })
   primary.onProgress = () => {
-    if (primary.cacheSeconds > LIVE_TARGET + 1) {
+    const target = mixBudget() ? SONGMIX_BUDGET - 2 : LIVE_TARGET
+    if (primary.cacheSeconds > target + 1) {
       primary.lastTrimAt = Date.now()
-      primary.mpv.seek(primary.cacheSeconds - LIVE_TARGET)
+      primary.mpv.seek(primary.cacheSeconds - target)
     }
     fadeVolume(0, effVol(), 400)
   }
@@ -1770,6 +1956,11 @@ function failover(reason, { blame = true } = {}) {
   const attempt = () => {
     if (shuttingDown || epoch !== swapEpoch) return
     const url = book.pick(primary?.url)
+    if (!url) {
+      state.swapping = false
+      state.warming = null
+      return
+    }
     state.warming = url
     render()
     standby = spawnPlayer(url, {
@@ -1804,9 +1995,10 @@ function failover(reason, { blame = true } = {}) {
         book.ok(primary.url)
         primary.onDeath = () => failover('mirror dropped')
         if (primary.icyTitle !== null) onIcyMeta(primary)
-        if (primary.cacheSeconds > LIVE_TARGET + 1) {
+        const target = mixBudget() ? SONGMIX_BUDGET - 2 : LIVE_TARGET
+        if (primary.cacheSeconds > target + 1) {
           primary.lastTrimAt = Date.now()
-          primary.mpv.seek(primary.cacheSeconds - LIVE_TARGET)
+          primary.mpv.seek(primary.cacheSeconds - target)
         }
         const parkable = old && !old.dead && !old.stale && old.station !== primary.station
         if (state.paused) {
@@ -1835,7 +2027,106 @@ function failover(reason, { blame = true } = {}) {
   attempt()
 }
 
+let songMixPlayer = null
+let songMixArmedFor = null
+
+const mixBudget = () => settings.songMix === 'on' && Boolean(state.station?.src)
+
+function heardTracks() {
+  if (!primary) return []
+  const drift = driftSeconds()
+  return state.tracks
+    .filter((t) => !isJingle(t))
+    .map((t) => ({ t, left: t.uptime - drift + primary.cacheSeconds }))
+    .filter((x) => x.left > 0)
+    .sort((a, b) => a.left - b.left)
+}
+
+function bankDepth() {
+  if (!primary || primary.dead || !primary.ipcReady) return
+  let want = 1
+  if (mixBudget() && !state.paused && primary.cacheSeconds < SONGMIX_BUDGET) {
+    const left = heardTracks()[0]?.left ?? 0
+    const need = SONGMIX_BUDGET - primary.cacheSeconds
+    const runway = Math.max(45, left - 5)
+    const slow = Math.min(1 - SONGMIX_SLOW_MAX, Math.max(0.004, need / runway))
+    want = 1 - Math.round(slow * 200) / 200
+  }
+  if (primary.speedApplied === want) return
+  if (primary.mpv.send(['set_property', 'speed', want])) primary.speedApplied = want
+}
+
+function cancelSongMix() {
+  if (songMixPlayer) {
+    songMixPlayer.onDeath = null
+    songMixPlayer.mpv.stop()
+    songMixPlayer = null
+  }
+  songMixArmedFor = null
+}
+
+function songMixCheck() {
+  if (settings.songMix !== 'on' || shuttingDown) return cancelSongMix()
+  const st = state.station
+  if (!st?.src || state.paused || state.swapping || state.mixing) return cancelSongMix()
+  if (!primary || primary.dead || !primary.progressed || primary.station !== st) return cancelSongMix()
+  const heard = heardTracks()
+  const cur = heard[0]?.t
+  const nxt = heard[1]?.t
+  if (!cur || !nxt || isJingle(cur)) return cancelSongMix()
+  const gap = nxt.uptime - (Number(nxt.lenght) || 0) - cur.uptime
+  if (!(gap < SONGMIX_GAP)) return cancelSongMix()
+  const left = heard[0].left
+  const key = `${st.uid}::${favKey(nxt)}`
+  if (songMixArmedFor && songMixArmedFor !== key) cancelSongMix()
+  if (left > SONGMIX_ARM) return
+  if (songMixArmedFor !== key) {
+    cancelSongMix()
+    songMixArmedFor = key
+    songMixPlayer = spawnPlayer(book.pick(primary.url), {
+      volume: 0,
+      paused: false,
+      station: st,
+      analyze: false,
+    })
+    songMixPlayer.onDeath = () => {
+      songMixPlayer = null
+      songMixArmedFor = null
+    }
+    return
+  }
+  const ahead = songMixPlayer
+  if (!ahead || ahead.dead || !ahead.progressed) return
+  if (ahead.cacheSeconds > SONGMIX_TAIL + 0.4) {
+    ahead.mpv.send(['seek', ahead.cacheSeconds - SONGMIX_TAIL, 'relative+exact'])
+    ahead.jumped = true
+    return
+  }
+  if (!ahead.jumped) return
+  const lead = primary.cacheSeconds - ahead.cacheSeconds
+  const overlap = Math.min(SONGMIX_MAX / 1000, lead - 0.4)
+  if (overlap < SONGMIX_MIN / 1000) {
+    if (left < 1) cancelSongMix()
+    return
+  }
+  if (left > overlap + 1) return
+  const old = primary
+  songMixPlayer = null
+  songMixArmedFor = null
+  ahead.mpv.send(['af', 'add', EQ_AF])
+  const modeAf = currentModeAf()
+  if (modeAf) ahead.mpv.send(['af', 'add', modeAf])
+  ahead.onDeath = () => failover('mirror dropped')
+  primary = ahead
+  book.ok(primary.url)
+  setNote(`mixing into ${nxt.title}`)
+  blendMix(old, ahead, { ms: Math.round(overlap * 1000), roll: true })
+}
+
+let duckStation = null
+
 function duckCheck() {
+  if (state.mixing) return
   if (Date.now() < breakModeArmAt) return
   if (state.tracksFor !== state.station) return
   const shouldDuck =
@@ -1845,9 +2136,11 @@ function duckCheck() {
   const target = shouldDuck ? duckLevel() : null
   if (shouldDuck === state.ducked && (!shouldDuck || target === state.duckApplied)) return
   const entering = shouldDuck !== state.ducked
+  const sameStation = duckStation === state.station
   const from = effVol()
   state.ducked = shouldDuck
   state.duckApplied = target
+  duckStation = shouldDuck ? state.station : null
   if (primary && !primary.dead && primary.ipcReady && !state.paused) fadeVolume(from, effVol(), 600)
   if ((entering || shouldDuck) && primary?.progressed && !state.paused && !state.muted) {
     if (shouldDuck) {
@@ -1857,6 +2150,7 @@ function duckCheck() {
           : 'break — volume lowered',
       )
     } else if (
+      sameStation &&
       (settings.breakAudio === 'duck' || settings.breakAudio === 'mute') &&
       !inBreak()
     ) {
@@ -1866,29 +2160,16 @@ function duckCheck() {
 }
 
 async function stationLooksClean(st) {
-  if (st.playlistId == null) {
+  if (!st.src) {
     const p = playerFor(st)
     return Boolean(p && Date.now() - p.icyAt < 300_000 && icyTrackFor(st))
   }
-  const ac = new AbortController()
-  const timer = setTimeout(() => ac.abort(), 4000)
-  try {
-    const res = await fetch(`https://api.rmfon.pl/stations/${st.playlistId}/playlist`, {
-      signal: ac.signal,
-      headers: { 'User-Agent': 'ttyfm' },
-    })
-    if (!res.ok) return false
-    const data = await res.json()
-    if (!Array.isArray(data)) return false
-    const cur = data.find((x) => x.order === 0)
-    if (!cur) return false
-    if (jingleRe?.test(cur.author ?? '')) return false
-    return cur.uptime > 15
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timer)
-  }
+  const res = await fetchPlaylistFor(st)
+  if (res.error || res.icy || !res.tracks) return false
+  const cur = res.tracks.find((x) => x.order === 0)
+  if (!cur) return false
+  if (jingleRe?.test(cur.author ?? '')) return false
+  return cur.uptime > 15
 }
 
 let lastFleeAt = 0
@@ -1913,14 +2194,17 @@ async function fleeCheck() {
     const candidates = radioSorted()
       .filter((s) => s !== state.station)
       .sort((a, b) => fleeRank(b) - fleeRank(a))
-    for (const st of candidates) {
-      if (await stationLooksClean(st)) {
-        if (!inBreak() || state.swapping || shuttingDown) return
-        lastFleeAt = Date.now()
-        tuneTo(stations.indexOf(st))
-        setNote(`break — fleeing to ${state.station.name}`)
-        return
-      }
+      .slice(0, 12)
+    const clean = await Promise.all(
+      candidates.map((st) => stationLooksClean(st).then((ok) => (ok ? st : null))),
+    )
+    const target = clean.find(Boolean)
+    if (target) {
+      if (!inBreak() || state.swapping || shuttingDown) return
+      lastFleeAt = Date.now()
+      tuneTo(stations.indexOf(target))
+      setNote(`break — fleeing to ${state.station.name}`)
+      return
     }
     lastFleeAt = Date.now()
     setNote('breaks everywhere — staying put')
@@ -1934,6 +2218,8 @@ function watchdog() {
   if (Date.now() >= breakModeArmAt) appliedBreakAudio = settings.breakAudio
   duckCheck()
   fleeCheck()
+  bankDepth()
+  songMixCheck()
   parkedSweep()
   if (
     state.paused &&
@@ -1954,14 +2240,15 @@ function watchdog() {
     failover(stalled ? 'stream stalled' : 'buffer starved')
     return
   }
+  const budget = mixBudget() ? SONGMIX_BUDGET : LIVE_TRIM_ABOVE
   if (
     primary.progressed &&
     !primary.buffering &&
-    primary.cacheSeconds > LIVE_TRIM_ABOVE &&
+    primary.cacheSeconds > budget &&
     Date.now() - primary.lastTrimAt > 10_000
   ) {
     primary.lastTrimAt = Date.now()
-    primary.mpv.seek(primary.cacheSeconds - LIVE_TARGET)
+    primary.mpv.seek(primary.cacheSeconds - (mixBudget() ? SONGMIX_BUDGET - 2 : LIVE_TARGET))
   }
 }
 
@@ -2021,9 +2308,9 @@ function render() {
 
   const playingNow = cur && !inBreak()
   setTermTitle(
-    playingNow ? `${cur.title} — ${cur.author} · tty.fm` : `✳ tty.fm · ${state.station?.name ?? 'RMF'}`,
+    playingNow ? `${cur.title} — ${cur.author} · tty.fm` : `✳ tty.fm${state.station ? ` · ${state.station.name}` : ''}`,
   )
-  setMediaTitle(playingNow ? `${cur.title} — ${cur.author}` : `${state.station?.name ?? 'RMF'} · tty.fm`)
+  setMediaTitle(playingNow ? `${cur.title} — ${cur.author}` : `${state.station?.name ?? 'tty.fm'} · tty.fm`)
 
   const ready = state.paused || Boolean(primary?.progressed)
   const settling = primary && !primary.dead && !state.paused && !primary.progressed
@@ -2038,15 +2325,24 @@ function render() {
       : `${C.red}●${C.reset} ${C.dim}offline${C.reset}`
     : state.paused
       ? `${C.accentDim}⏸${C.reset} ${C.dim}paused${C.reset}`
-      : settling || primary.buffering || stalledNow
-        ? `${C.accent}${spinnerFrame()}${C.reset} ${C.dim}${C.italic}${state.verb}…${C.reset}`
-        : `${C.green}●${C.reset} ${C.dim}live${C.reset}`
+      : state.mixing
+        ? `${C.accent}${spinnerFrame()}${C.reset} ${C.dim}${C.italic}mixing…${C.reset}`
+        : settling || primary.buffering || stalledNow
+          ? `${C.accent}${spinnerFrame()}${C.reset} ${C.dim}${C.italic}${state.verb}…${C.reset}`
+          : `${C.green}●${C.reset} ${C.dim}live${C.reset}`
 
   const cache = primary?.cacheSeconds ?? 0
   const chipLive =
-    primary && !primary.dead && !state.rejoining && !state.paused && !settling && !primary.buffering && !stalledNow
+    primary &&
+    !primary.dead &&
+    !state.rejoining &&
+    !state.paused &&
+    !state.mixing &&
+    !settling &&
+    !primary.buffering &&
+    !stalledNow
   const lag =
-    chipLive && cache > LIVE_TRIM_ABOVE
+    chipLive && !mixBudget() && cache > LIVE_TRIM_ABOVE
       ? `${C.dim} · ${Math.round(cache)}s behind ·${C.reset} ${C.accentDim}${C.italic}catching up…${C.reset}`
       : ''
 
@@ -2151,7 +2447,8 @@ function render() {
   } else if (state.showRadios) {
     out.push(`${pad}${C.accent}⏺${C.reset} ${C.text}${C.bold}Stations${C.reset} ${C.dim}(↑↓ + enter · d add · x remove · p pin · w warm all · c cool)${C.reset}`)
     if (Date.now() - stationNowAt > 15_000) refreshStationNow()
-    const namePad = Math.min(24, Math.max(...stations.map((s) => s.name.length)) + 2)
+    if (!stations.length) out.push(`${pad}  ${C.dim}⎿  nothing added yet — press d to find stations${C.reset}`)
+    const namePad = Math.min(24, Math.max(0, ...stations.map((s) => s.name.length)) + 2)
     radioSorted().forEach((st, i) => {
       const lead = i === 0 ? '⎿  ' : '   '
       const sel = i === state.radioCursor
@@ -2353,7 +2650,8 @@ function render() {
         : resume > -10
           ? 'listed songs back any moment now'
           : "their playlist is lagging — song data soon"
-    out.push(`${pad}  ${C.dim}⎿  ${clip(`not tracked in RMF's playlist — ${eta}`, Math.max(8, inner - 5))}${C.reset}`)
+    const whose = state.station?.name ? `${state.station.name}'s` : 'the station'
+    out.push(`${pad}  ${C.dim}⎿  ${clip(`not tracked in ${whose} playlist — ${eta}`, Math.max(8, inner - 5))}${C.reset}`)
     if (next) {
       out.push('')
       const h = isFavorite(next) ? ` ${C.accent}♥${C.reset}` : ''
@@ -2434,7 +2732,11 @@ function render() {
     : `${state.paused ? C.dim : C.accentDim}${eqFrame()}${C.reset}`
   const mount = primary ? ` · ${hostOf(primary.url).toUpperCase()}` : ''
   const station = ((primary?.station ?? state.station)?.name ?? '').toUpperCase()
-  const plate = station ? `${C.yellow}[${station}${mount}]${C.reset}` : `${C.dim}[no station]${C.reset}`
+  const plate = pendingStation
+    ? `${C.yellow}[${station} ${C.dim}→${C.reset} ${C.yellow}${pendingStation.name.toUpperCase()}]${C.reset}`
+    : station
+      ? `${C.yellow}[${station}${mount}]${C.reset}`
+      : `${C.dim}[no station]${C.reset}`
   bottom.push(pad + rowFit(plate, [eq, ''], inner))
   const ipcDown = primary?.ipcFailed && !primary.dead && !state.swapping
   const breakColor = { off: C.dim, duck: C.purple, mute: C.red, hop: C.green }[settings.breakAudio]
@@ -2483,6 +2785,8 @@ let shuttingDown = false
 function cleanup() {
   if (shuttingDown) return
   shuttingDown = true
+  clearInterval(mixTimer)
+  songMixPlayer?.mpv.stop()
   clearInterval(renderTimer)
   clearInterval(watchdogTimer)
   clearInterval(stationNowTimer)
@@ -2578,7 +2882,7 @@ function onKey(buf) {
         const st = addStation(hit)
         openDiscover(false)
         if (st && st !== state.station) {
-          lastFleeAt = 0
+          lastFleeAt = Date.now()
           tuneTo(stations.indexOf(st))
         }
       }
@@ -2631,7 +2935,7 @@ function onKey(buf) {
     }
   }
   if (state.showRadios) {
-    if (key === '\x1b[A' || key === '\x1b[B') {
+    if ((key === '\x1b[A' || key === '\x1b[B') && stations.length) {
       const d = key === '\x1b[A' ? -1 : 1
       state.radioCursor = (state.radioCursor + d + stations.length) % stations.length
       render()
@@ -2641,7 +2945,7 @@ function onKey(buf) {
       const target = radioSorted()[state.radioCursor]
       if (target === state.station) state.showRadios = false
       else {
-        lastFleeAt = 0
+        lastFleeAt = Date.now()
         tuneTo(stations.indexOf(target))
       }
       render()
@@ -2717,6 +3021,8 @@ function onKey(buf) {
     case ' ':
     case 'p': {
       if (!primary?.mpv.connected) break
+      endMix()
+      cancelSongMix()
       const want = !state.paused
       state.paused = want
       if (want) {
@@ -2738,7 +3044,8 @@ function onKey(buf) {
           failover('rejoining live', { blame: false })
         } else {
           const backlog = primary.cacheSeconds
-          if (backlog > LIVE_TARGET + 1) primary.mpv.seek(backlog - LIVE_TARGET)
+          const target = mixBudget() ? SONGMIX_BUDGET - 2 : LIVE_TARGET
+          if (backlog > target + 1) primary.mpv.seek(backlog - target)
           else state.pausedTotal += pausedFor
           primary.lastProgressAt = Date.now()
           primary.mpv.setVolume(0)
@@ -2777,11 +3084,8 @@ function onKey(buf) {
     case '9': {
       const st = radioSorted()[Number(key) - 1]
       if (!st) setNote(`no station ${key}`)
-      else if (st === state.station) setNote(`already on ${st.name}`)
-      else {
-        lastFleeAt = 0
-        tuneTo(stations.indexOf(st))
-      }
+      else if (st === (pendingStation ?? state.station)) setNote(`already on ${st.name}`)
+      else queueStation(st)
       break
     }
     case 'n':
@@ -2950,7 +3254,7 @@ async function main() {
   try {
     raw = JSON.parse(await readFile(JSON_PATH, 'utf8'))
   } catch {}
-  stations = normalizeStations(raw.stations ?? [])
+  stations = normalizeStations(Array.isArray(raw?.stations) ? raw.stations : [])
   refreshJingleRe()
   state.station = stations[0] ?? null
   if (state.station) book.load(state.station.mirrors)
